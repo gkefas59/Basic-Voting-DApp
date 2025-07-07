@@ -269,3 +269,90 @@
     false
   )
 )
+
+(define-map delegations
+  principal
+  principal
+)
+
+(define-map delegation-weights
+  {proposal-id: uint, delegate: principal}
+  uint
+)
+
+(define-read-only (get-delegate (delegator principal))
+  (map-get? delegations delegator)
+)
+
+(define-read-only (get-delegation-weight (proposal-id uint) (delegate principal))
+  (default-to u0 (map-get? delegation-weights {proposal-id: proposal-id, delegate: delegate}))
+)
+
+(define-read-only (has-delegate (delegator principal))
+  (is-some (map-get? delegations delegator))
+)
+
+(define-public (set-delegate (delegate principal))
+  (begin
+    (asserts! (not (is-eq tx-sender delegate)) (err u108))
+    (map-set delegations tx-sender delegate)
+    (ok true)
+  )
+)
+
+(define-public (revoke-delegate)
+  (begin
+    (map-delete delegations tx-sender)
+    (ok true)
+  )
+)
+
+(define-public (vote-as-delegate (proposal-id uint) (option (string-ascii 1)) (delegators (list 50 principal)))
+  (let
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (delegate tx-sender)
+    )
+    (asserts! (is-voting-active proposal-id) ERR_VOTING_ENDED)
+    (asserts! (or (is-eq option "A") (is-eq option "B")) ERR_INVALID_OPTION)
+    
+    (let
+      (
+        (valid-delegators (filter validate-delegation delegators))
+        (vote-count (len valid-delegators))
+      )
+      (asserts! (> vote-count u0) (err u109))
+      
+      (map-set delegation-weights 
+        {proposal-id: proposal-id, delegate: delegate}
+        vote-count
+      )
+      
+      (let
+        (
+          (updated-proposal
+            (if (is-eq option "A")
+              (merge proposal {
+                votes-a: (+ (get votes-a proposal) vote-count),
+                total-votes: (+ (get total-votes proposal) vote-count)
+              })
+              (merge proposal {
+                votes-b: (+ (get votes-b proposal) vote-count),
+                total-votes: (+ (get total-votes proposal) vote-count)
+              })
+            )
+          )
+        )
+        (map-set proposals proposal-id updated-proposal)
+        (ok vote-count)
+      )
+    )
+  )
+)
+
+(define-private (validate-delegation (delegator principal))
+  (and
+    (is-some (map-get? delegations delegator))
+    (is-eq tx-sender (unwrap-panic (map-get? delegations delegator)))
+  )
+)
