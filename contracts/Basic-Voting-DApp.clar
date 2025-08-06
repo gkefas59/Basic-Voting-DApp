@@ -8,6 +8,11 @@
 (define-constant ERR_PROPOSAL_EXISTS (err u106))
 (define-constant ERR_INVALID_OPTION (err u107))
 
+(define-constant MAX_WEIGHT u10)
+(define-constant BASE_WEIGHT u1)
+(define-constant PARTICIPATION_THRESHOLD u5)
+(define-constant DECAY_BLOCKS u144)
+
 (define-data-var next-proposal-id uint u1)
 
 (define-map proposals
@@ -354,5 +359,105 @@
   (and
     (is-some (map-get? delegations delegator))
     (is-eq tx-sender (unwrap-panic (map-get? delegations delegator)))
+  )
+)
+
+(define-map user-weights
+  principal
+  {
+    base-weight: uint,
+    participation-bonus: uint,
+    last-vote-block: uint,
+    consecutive-votes: uint
+  }
+)
+
+(define-read-only (min (a uint) (b uint))
+  (if (< a b) a b)
+)
+
+(define-read-only (get-user-weight (user principal))
+  (let
+    (
+      (weight-data (default-to 
+        {base-weight: BASE_WEIGHT, participation-bonus: u0, last-vote-block: u0, consecutive-votes: u0}
+        (map-get? user-weights user)))
+      (current-block stacks-block-height)
+      (last-vote (get last-vote-block weight-data))
+      (is-decayed (> (- current-block last-vote) DECAY_BLOCKS))
+    )
+    (if is-decayed
+      BASE_WEIGHT
+      (min (+ (get base-weight weight-data) (get participation-bonus weight-data)) MAX_WEIGHT)
+    )
+  )
+)
+
+(define-read-only (get-weight-details (user principal))
+  (default-to 
+    {base-weight: BASE_WEIGHT, participation-bonus: u0, last-vote-block: u0, consecutive-votes: u0}
+    (map-get? user-weights user))
+)
+
+(define-private (update-user-weight (user principal))
+  (let
+    (
+      (current-weight (get-weight-details user))
+      (current-block stacks-block-height)
+      (last-vote (get last-vote-block current-weight))
+      (consecutive (get consecutive-votes current-weight))
+      (new-consecutive (if (< (- current-block last-vote) DECAY_BLOCKS) (+ consecutive u1) u1))
+      (new-bonus (if (>= new-consecutive PARTICIPATION_THRESHOLD) 
+                   (min (/ new-consecutive PARTICIPATION_THRESHOLD) (- MAX_WEIGHT BASE_WEIGHT))
+                   u0))
+    )
+    (map-set user-weights user
+      {
+        base-weight: BASE_WEIGHT,
+        participation-bonus: new-bonus,
+        last-vote-block: current-block,
+        consecutive-votes: new-consecutive
+      }
+    )
+  )
+)
+
+(define-public (weighted-vote (proposal-id uint) (option (string-ascii 1)))
+  (let
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (voter tx-sender)
+      (vote-weight (get-user-weight voter))
+    )
+    (asserts! (not (has-voted proposal-id voter)) ERR_ALREADY_VOTED)
+    (asserts! (is-voting-active proposal-id) ERR_VOTING_ENDED)
+    (asserts! (or (is-eq option "A") (is-eq option "B")) ERR_INVALID_OPTION)
+    
+    (map-set votes 
+      {proposal-id: proposal-id, voter: voter}
+      {option: option, block-height: stacks-block-height}
+    )
+    
+    (update-user-weight voter)
+    
+    (let
+      (
+        (updated-proposal
+          (if (is-eq option "A")
+            (merge proposal {
+              votes-a: (+ (get votes-a proposal) vote-weight),
+              total-votes: (+ (get total-votes proposal) vote-weight)
+            })
+            (merge proposal {
+              votes-b: (+ (get votes-b proposal) vote-weight),
+              total-votes: (+ (get total-votes proposal) vote-weight)
+            })
+          )
+        )
+      )
+      (map-set proposals proposal-id updated-proposal)
+      (update-voter-history voter proposal-id)
+      (ok vote-weight)
+    )
   )
 )
