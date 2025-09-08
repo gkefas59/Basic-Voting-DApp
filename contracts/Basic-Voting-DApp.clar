@@ -13,6 +13,9 @@
 (define-constant PARTICIPATION_THRESHOLD u5)
 (define-constant DECAY_BLOCKS u144)
 
+(define-constant ERR_INVALID_RATING (err u110))
+(define-constant ERR_ALREADY_RATED (err u111))
+
 (define-data-var next-proposal-id uint u1)
 
 (define-map proposals
@@ -459,5 +462,80 @@
       (update-voter-history voter proposal-id)
       (ok vote-weight)
     )
+  )
+)
+
+
+
+(define-map proposal-ratings
+  {proposal-id: uint, rater: principal}
+  uint
+)
+
+(define-map rating-stats
+  uint
+  {
+    total-ratings: uint,
+    rating-sum: uint,
+    one-star: uint,
+    two-star: uint,
+    three-star: uint,
+    four-star: uint,
+    five-star: uint
+  }
+)
+
+(define-read-only (get-user-rating (proposal-id uint) (rater principal))
+  (map-get? proposal-ratings {proposal-id: proposal-id, rater: rater})
+)
+
+(define-read-only (has-rated (proposal-id uint) (rater principal))
+  (is-some (map-get? proposal-ratings {proposal-id: proposal-id, rater: rater}))
+)
+
+(define-read-only (get-proposal-rating-stats (proposal-id uint))
+  (let
+    (
+      (stats (default-to 
+        {total-ratings: u0, rating-sum: u0, one-star: u0, two-star: u0, three-star: u0, four-star: u0, five-star: u0}
+        (map-get? rating-stats proposal-id)))
+    )
+    (merge stats {
+      average-rating: (if (> (get total-ratings stats) u0) 
+                       (/ (* (get rating-sum stats) u100) (get total-ratings stats))
+                       u0)
+    })
+  )
+)
+
+(define-public (rate-proposal (proposal-id uint) (rating uint))
+  (let
+    (
+      (rater tx-sender)
+      (current-stats (default-to 
+        {total-ratings: u0, rating-sum: u0, one-star: u0, two-star: u0, three-star: u0, four-star: u0, five-star: u0}
+        (map-get? rating-stats proposal-id)))
+    )
+    (asserts! (is-some (map-get? proposals proposal-id)) ERR_PROPOSAL_NOT_FOUND)
+    (asserts! (and (>= rating u1) (<= rating u5)) ERR_INVALID_RATING)
+    (asserts! (not (has-rated proposal-id rater)) ERR_ALREADY_RATED)
+    
+    (map-set proposal-ratings 
+      {proposal-id: proposal-id, rater: rater}
+      rating
+    )
+    
+    (map-set rating-stats proposal-id
+      (merge current-stats {
+        total-ratings: (+ (get total-ratings current-stats) u1),
+        rating-sum: (+ (get rating-sum current-stats) rating),
+        one-star: (+ (get one-star current-stats) (if (is-eq rating u1) u1 u0)),
+        two-star: (+ (get two-star current-stats) (if (is-eq rating u2) u1 u0)),
+        three-star: (+ (get three-star current-stats) (if (is-eq rating u3) u1 u0)),
+        four-star: (+ (get four-star current-stats) (if (is-eq rating u4) u1 u0)),
+        five-star: (+ (get five-star current-stats) (if (is-eq rating u5) u1 u0))
+      })
+    )
+    (ok rating)
   )
 )
