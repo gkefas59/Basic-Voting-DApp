@@ -13,6 +13,10 @@
 (define-constant PARTICIPATION_THRESHOLD u5)
 (define-constant DECAY_BLOCKS u144)
 
+(define-constant ERR_TEMPLATE_NOT_FOUND (err u112))
+(define-constant ERR_CATEGORY_NOT_FOUND (err u113))
+(define-constant ERR_TEMPLATE_EXISTS (err u114))
+
 (define-constant ERR_INVALID_RATING (err u110))
 (define-constant ERR_ALREADY_RATED (err u111))
 
@@ -537,5 +541,122 @@
       })
     )
     (ok rating)
+  )
+)
+
+(define-map proposal-categories
+  (string-ascii 20)
+  {active: bool, proposal-count: uint}
+)
+
+(define-map proposal-templates
+  uint
+  {
+    name: (string-ascii 50),
+    category: (string-ascii 20),
+    title-template: (string-ascii 100),
+    description-template: (string-ascii 500),
+    default-duration: uint,
+    creator: principal
+  }
+)
+
+(define-map proposals-by-category
+  {category: (string-ascii 20), index: uint}
+  uint
+)
+
+(define-data-var next-template-id uint u1)
+
+(define-read-only (get-template (template-id uint))
+  (map-get? proposal-templates template-id)
+)
+
+(define-read-only (get-category-info (category (string-ascii 20)))
+  (map-get? proposal-categories category)
+)
+
+(define-read-only (get-proposals-by-category (category (string-ascii 20)) (limit uint))
+  (let
+    (
+      (category-data (unwrap! (map-get? proposal-categories category) (err ERR_CATEGORY_NOT_FOUND)))
+      (total (get proposal-count category-data))
+      (max-index (min limit total))
+    )
+    (ok {category: category, total: total, max-shown: max-index})
+  )
+)
+
+(define-public (create-category (category (string-ascii 20)))
+  (begin
+    (asserts! (is-none (map-get? proposal-categories category)) (err u115))
+    (map-set proposal-categories category {active: true, proposal-count: u0})
+    (ok true)
+  )
+)
+
+(define-public (create-template 
+  (name (string-ascii 50))
+  (category (string-ascii 20))
+  (title-template (string-ascii 100))
+  (description-template (string-ascii 500))
+  (default-duration uint))
+  (let
+    (
+      (template-id (var-get next-template-id))
+    )
+    (asserts! (is-some (map-get? proposal-categories category)) ERR_CATEGORY_NOT_FOUND)
+    (map-set proposal-templates template-id
+      {
+        name: name,
+        category: category,
+        title-template: title-template,
+        description-template: description-template,
+        default-duration: default-duration,
+        creator: tx-sender
+      }
+    )
+    (var-set next-template-id (+ template-id u1))
+    (ok template-id)
+  )
+)
+
+(define-public (create-proposal-from-template
+  (template-id uint)
+  (option-a (string-ascii 50))
+  (option-b (string-ascii 50)))
+  (let
+    (
+      (template (unwrap! (map-get? proposal-templates template-id) ERR_TEMPLATE_NOT_FOUND))
+      (proposal-id (var-get next-proposal-id))
+      (current-block stacks-block-height)
+      (duration (get default-duration template))
+      (category (get category template))
+      (category-data (unwrap! (map-get? proposal-categories category) ERR_CATEGORY_NOT_FOUND))
+    )
+    (map-set proposals proposal-id
+      {
+        title: (get title-template template),
+        description: (get description-template template),
+        creator: tx-sender,
+        start-block: current-block,
+        end-block: (+ current-block duration),
+        option-a: option-a,
+        option-b: option-b,
+        votes-a: u0,
+        votes-b: u0,
+        total-votes: u0,
+        finalized: false
+      }
+    )
+    (map-set proposals-by-category 
+      {category: category, index: (get proposal-count category-data)}
+      proposal-id
+    )
+    (map-set proposal-categories category
+      (merge category-data {proposal-count: (+ (get proposal-count category-data) u1)})
+    )
+    (var-set next-proposal-id (+ proposal-id u1))
+    (ok proposal-id)
   )
 )
