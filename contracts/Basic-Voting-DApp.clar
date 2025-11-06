@@ -20,6 +20,15 @@
 (define-constant ERR_INVALID_RATING (err u110))
 (define-constant ERR_ALREADY_RATED (err u111))
 
+(define-constant ERR_BOUNTY_NOT_FOUND (err u200))
+(define-constant ERR_BOUNTY_EXISTS (err u201))
+(define-constant ERR_INSUFFICIENT_FUNDS (err u202))
+(define-constant ERR_VOTING_ACTIVE (err u203))
+(define-constant ERR_NO_WINNER (err u204))
+(define-constant ERR_ALREADY_CLAIMED (err u205))
+(define-constant ERR_NOT_WINNER (err u206))
+(define-constant ERR_PROPOSAL_INVALID (err u207))
+
 (define-data-var next-proposal-id uint u1)
 
 (define-map proposals
@@ -658,5 +667,77 @@
     )
     (var-set next-proposal-id (+ proposal-id u1))
     (ok proposal-id)
+  )
+)
+
+
+(define-map proposal-bounties
+  uint
+  {
+    total-amount: uint,
+    creator: principal,
+    claimed: bool,
+    winner-option: (optional (string-ascii 1)),
+    winner-votes: uint
+  }
+)
+
+(define-map bounty-claims
+  {proposal-id: uint, claimant: principal}
+  {claimed-amount: uint, claim-block: uint}
+)
+
+(define-read-only (get-bounty (proposal-id uint))
+  (map-get? proposal-bounties proposal-id)
+)
+
+(define-read-only (get-claim (proposal-id uint) (claimant principal))
+  (map-get? bounty-claims {proposal-id: proposal-id, claimant: claimant})
+)
+
+(define-read-only (has-claimed (proposal-id uint) (claimant principal))
+  (is-some (map-get? bounty-claims {proposal-id: proposal-id, claimant: claimant}))
+)
+
+(define-public (create-bounty-proposal (proposal-id uint) (bounty-amount uint))
+  (let
+    (
+      (sender tx-sender)
+    )
+    (asserts! (is-none (map-get? proposal-bounties proposal-id)) ERR_BOUNTY_EXISTS)
+    (asserts! (> bounty-amount u0) ERR_INSUFFICIENT_FUNDS)
+    
+    (try! (stx-transfer? bounty-amount sender (as-contract tx-sender)))
+    
+    (map-set proposal-bounties proposal-id
+      {
+        total-amount: bounty-amount,
+        creator: sender,
+        claimed: false,
+        winner-option: none,
+        winner-votes: u0
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-public (claim-bounty (proposal-id uint) (voter-option (string-ascii 1)) (voter-votes uint) (total-winner-votes uint))
+  (let
+    (
+      (bounty (unwrap! (map-get? proposal-bounties proposal-id) ERR_BOUNTY_NOT_FOUND))
+      (claimant tx-sender)
+      (share (/ (* (get total-amount bounty) voter-votes) total-winner-votes))
+    )
+    (asserts! (not (has-claimed proposal-id claimant)) ERR_ALREADY_CLAIMED)
+    (asserts! (> voter-votes u0) ERR_NOT_WINNER)
+    (asserts! (> total-winner-votes u0) ERR_NO_WINNER)
+    
+    (map-set bounty-claims 
+      {proposal-id: proposal-id, claimant: claimant}
+      {claimed-amount: share, claim-block: stacks-block-height}
+    )
+    
+    (as-contract (stx-transfer? share tx-sender claimant))
   )
 )
